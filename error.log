@@ -1,0 +1,12 @@
+{"level":"error","message":"Falha ao enviar mensagem para 1: SQLITE_CONSTRAINT: NOT NULL constraint failed: messages.sent_by_number","timestamp":"2025-08-01T17:51:34.982Z"}
+{"level":"error","message":"Falha ao enviar mensagem para 1: SQLITE_CONSTRAINT: NOT NULL constraint failed: messages.sent_by_number","timestamp":"2025-08-01T17:51:36.754Z"}
+{"level":"error","message":"Falha ao enviar mensagem para 1: SQLITE_CONSTRAINT: NOT NULL constraint failed: messages.sent_by_number","timestamp":"2025-08-01T17:52:46.112Z"}
+{"level":"error","message":"Falha ao enviar mensagem para 1: SQLITE_CONSTRAINT: NOT NULL constraint failed: messages.sent_by_number","timestamp":"2025-08-01T17:52:46.798Z"}
+{"level":"error","message":"Falha ao enviar mensagem para 1: SQLITE_CONSTRAINT: NOT NULL constraint failed: messages.sent_by_number","timestamp":"2025-08-01T17:53:10.107Z"}
+{"level":"error","message":"Falha ao enviar mensagem para 1: SQLITE_CONSTRAINT: NOT NULL constraint failed: messages.sent_by_number","timestamp":"2025-08-01T17:53:10.712Z"}
+{"level":"error","message":"Falha ao enviar mensagem para 2: SQLITE_CONSTRAINT: NOT NULL constraint failed: messages.sent_by_number","timestamp":"2025-08-01T17:58:15.549Z"}
+{"level":"error","message":"Falha ao enviar mensagem para 2: SQLITE_CONSTRAINT: NOT NULL constraint failed: messages.sent_by_number","timestamp":"2025-08-01T17:58:16.323Z"}
+{"level":"error","message":"Erro ao criar assinatura no Mercado Pago: card_token_id is required","status":400,"timestamp":"2025-08-01T18:35:23.093Z"}
+{"level":"error","message":"Erro ao criar assinatura no Mercado Pago: card_token_id is required","status":400,"timestamp":"2025-08-01T18:37:56.276Z"}
+{"level":"error","message":"Erro ao criar assinatura no Mercado Pago:","timestamp":"2025-08-01T19:00:55.068Z"}
+{"level":"error","message":"Erro ao criar assinatura no Mercado Pago:","timestamp":"2025-08-01T19:07:32.667Z"}

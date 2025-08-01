@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="pt-BR" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel de Testes - API WhatsApp</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://sdk.mercadopago.com/js/v2"></script>
+    <style>
+        body { padding-top: 20px; }
+        .container { max-width: 960px; }
+        .card { margin-bottom: 2rem; }
+        #api-log { background-color: #212529; color: #adb5bd; font-family: monospace; font-size: 0.8rem; height: 150px; overflow-y: scroll; border: 1px solid #495057; padding: 10px; }
+        .spinner-border { width: 1.5rem; height: 1.5rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1 class="mb-0">Painel de Testes - API WhatsApp</h1>
+            <div id="userInfo" class="text-end" style="display: none;">
+                <span id="userEmail" class="text-muted"></span><br>
+                <button id="logoutButton" class="btn btn-sm btn-outline-danger">Sair</button>
+            </div>
+        </div>
+
+        <div id="authSection">
+            <div class="card bg-body-tertiary">
+                <div class="card-header">
+                    <ul class="nav nav-tabs card-header-tabs" id="authTabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="login-tab" data-bs-toggle="tab" data-bs-target="#login-panel" type="button" role="tab">Login</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="register-tab" data-bs-toggle="tab" data-bs-target="#register-panel" type="button" role="tab">Registrar</button>
+                        </li>
+                    </ul>
+                </div>
+                <div class="card-body">
+                    <div class="tab-content" id="authTabsContent">
+                        <div class="tab-pane fade show active" id="login-panel" role="tabpanel">
+                            <form id="loginForm">
+                                <div class="mb-3"><label for="loginEmail" class="form-label">Email</label><input type="email" class="form-control" id="loginEmail" required placeholder="seu@email.com"></div>
+                                <div class="mb-3"><label for="loginPassword" class="form-label">Senha</label><input type="password" class="form-control" id="loginPassword" required placeholder="••••••••"></div>
+                                <button type="submit" class="btn btn-primary">Entrar</button>
+                            </form>
+                        </div>
+                        <div class="tab-pane fade" id="register-panel" role="tabpanel">
+                            <form id="registerForm">
+                                <div class="mb-3"><label for="registerEmail" class="form-label">Email</label><input type="email" class="form-control" id="registerEmail" required placeholder="novo@email.com"></div>
+                                <div class="mb-3"><label for="registerPassword" class="form-label">Senha</label><input type="password" class="form-control" id="registerPassword" required placeholder="Mínimo 8 caracteres"></div>
+                                <button type="submit" class="btn btn-success">Registrar Conta</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="mainSection" style="display: none;">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card"><h5 class="card-header">Status do Plano</h5><div class="card-body" id="planStatusCard"><p>Carregando...</p></div></div>
+                    <div class="card"><h5 class="card-header">Planos Disponíveis</h5><div class="card-body"><div id="availablePlans" class="list-group"></div></div></div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <h5 class="card-header">Enviar Mensagem</h5>
+                        <div class="card-body">
+                            <form id="sendMessageForm">
+                                <div class="mb-3"><label for="toNumber" class="form-label">Destinatário</label><input type="text" class="form-control" id="toNumber" required placeholder="Ex: 5511999999999"></div>
+                                <div class="mb-3"><label for="messageContent" class="form-label">Mensagem</label><textarea class="form-control" id="messageContent" rows="3" placeholder="Olá, mundo!"></textarea></div>
+                                <div class="mb-3"><label for="mediaUrl" class="form-label">URL da Mídia (Opcional)</label><input type="url" class="form-control" id="mediaUrl" placeholder="https://site.com/imagem.png"></div>
+                                <button type="submit" class="btn btn-primary">Enviar</button>
+                            </form>
+                        </div>
+                    </div>
+                     <div class="card">
+                        <h5 class="card-header">Enviar em Lote</h5>
+                        <div class="card-body">
+                            <form id="sendBatchForm">
+                                <div class="mb-3">
+                                    <label for="batchContacts" class="form-label">Contatos (CSV: número,mensagem)</label>
+                                    <textarea class="form-control" id="batchContacts" rows="4" placeholder="5511999999999,Olá, mensagem 1&#10;5511888888888,Olá, mensagem 2"></textarea>
+                                    <div class="form-text">Uma linha por contato: número,vírgula,mensagem.</div>
+                                </div>
+                                <button type="submit" class="btn btn-warning">Enviar em Lote</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center"><h5>Histórico de Envios</h5><button id="refreshHistoryBtn" class="btn btn-sm btn-outline-secondary">Atualizar</button></div>
+                <div class="card-body"><div class="table-responsive"><table class="table table-striped table-hover"><thead><tr><th>Data</th><th>Para</th><th>Status</th><th>Conteúdo</th><th>Erro</th></tr></thead><tbody id="historyTableBody"></tbody></table></div></div>
+            </div>
+        </div>
+        
+        <div class="card"><h5 class="card-header">Log da API</h5><div class="card-body"><pre id="api-log"></pre></div></div>
+    </div>
+    
+    <div class="modal fade" id="paymentModal" tabindex="-1" aria-labelledby="paymentModalLabel" aria-hidden="true">
+        <div class="modal-dialog"><div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title" id="paymentModalLabel">Pagamento da Assinatura</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+            <div class="modal-body">
+                <p>Preencha os dados do seu cartão para assinar o plano <strong id="modalPlanName"></strong>.</p>
+                <div id="cardPaymentBrick_container"></div>
+                <div id="paymentError" class="text-danger mt-2"></div>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button></div>
+        </div></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const MERCADO_PAGO_PUBLIC_KEY = "APP_USR-5141244c-30ce-4351-bc4d-bf936b1f1951"; 
+
+            const API_URL = 'http://localhost:3000';
+            let authToken = localStorage.getItem('authToken');
+            let userEmail = localStorage.getItem('userEmail');
+            
+            const authSection = document.getElementById('authSection'), mainSection = document.getElementById('mainSection'), userInfo = document.getElementById('userInfo'), userEmailEl = document.getElementById('userEmail'), apiLog = document.getElementById('api-log'), loginForm = document.getElementById('loginForm'), registerForm = document.getElementById('registerForm'), sendMessageForm = document.getElementById('sendMessageForm'), sendBatchForm = document.getElementById('sendBatchForm'), logoutButton = document.getElementById('logoutButton'), refreshHistoryBtn = document.getElementById('refreshHistoryBtn');
+
+            let paymentModal, currentBrickController;
+
+            const log = (message, data) => { apiLog.innerHTML += `<strong>[${new Date().toLocaleTimeString()}] ${message}</strong>\n${JSON.stringify(data, null, 2)}\n\n`; apiLog.scrollTop = apiLog.scrollHeight; };
+            const apiCall = async (endpoint, method = 'GET', body = null) => {
+                const headers = { 'Content-Type': 'application/json' };
+                if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+                const options = { method, headers, body: body ? JSON.stringify(body) : null };
+                try {
+                    const response = await fetch(`${API_URL}${endpoint}`, options);
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || 'Erro desconhecido');
+                    log(`SUCESSO em ${endpoint}`, data);
+                    return data;
+                } catch (error) {
+                    log(`ERRO em ${endpoint}`, { message: error.message });
+                    alert(`Erro na API: ${error.message}`);
+                    throw error;
+                }
+            };
+            const handleLogin = async (email, password) => { try { const data = await apiCall('/auth/login', 'POST', { email, password }); authToken = data.token; userEmail = data.email; localStorage.setItem('authToken', authToken); localStorage.setItem('userEmail', userEmail); showMainApp(); } catch (e) {} };
+            const handleRegister = async (email, password) => { try { await apiCall('/auth/register', 'POST', { email, password }); alert('Usuário registrado! Faça o login.'); new bootstrap.Tab('#login-tab').show(); document.getElementById('loginEmail').value = email; } catch (e) {} };
+            const handleLogout = () => { localStorage.clear(); authToken = null; userEmail = null; showAuthSection(); };
+            const fetchPlanStatus = async () => { try { const data = await apiCall('/plan/status'); document.getElementById('planStatusCard').innerHTML = `<p class="mb-1"><strong>Plano:</strong> <span class="badge bg-info">${data.plan_name}</span></p><p class="mb-1"><strong>Enviadas:</strong> ${data.messages_sent}</p><p class="mb-1"><strong>Restantes:</strong> ${data.messages_remaining}</p><p class="mb-0 text-muted small"><strong>Renova em:</strong> ${new Date(data.reset_date).toLocaleDateString()}</p>`; } catch (e) { document.getElementById('planStatusCard').innerHTML = `<p class="text-danger">Erro ao carregar status.</p>`; } };
+            const fetchAvailablePlans = async () => { try { const plans = await apiCall('/plan/available'); const container = document.getElementById('availablePlans'); container.innerHTML = ''; plans.forEach(p => { container.innerHTML += `<div class="list-group-item d-flex justify-content-between align-items-center"><div><h6 class="mb-1">${p.name}</h6><p class="mb-1 small text-muted">${p.features}</p><p class="mb-0"><strong>${p.message_limit === -1 ? 'Ilimitadas' : p.message_limit} msgs/mês</strong> por R$ ${p.price.toFixed(2)}</p></div>${p.price > 0 ? `<button class="btn btn-success btn-sm" onclick="handleUpgrade(${p.id}, '${p.name}', ${p.price})">Upgrade</button>` : ''}</div>`; }); } catch (e) { document.getElementById('availablePlans').innerHTML = `<p class="text-danger">Erro ao carregar planos.</p>`; } };
+            const fetchHistory = async () => { const tbody = document.getElementById('historyTableBody'); tbody.innerHTML = '<tr><td colspan="5" class="text-center">Carregando...</td></tr>'; try { const messages = await apiCall('/messages/history'); tbody.innerHTML = ''; if (!messages || !messages.length) { tbody.innerHTML = '<tr><td colspan="5" class="text-center">Nenhuma mensagem.</td></tr>'; return; } messages.forEach(msg => { tbody.innerHTML += `<tr><td>${new Date(msg.sent_at).toLocaleString()}</td><td>${msg.number_to}</td><td><span class="${msg.status === 'sent' ? 'text-success' : 'text-danger'}">${msg.status}</span></td><td><small>${msg.message_content || 'Mídia'}</small></td><td><small class="text-warning">${msg.error_message || '-'}</small></td></tr>`; }); } catch (e) { tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Erro ao carregar.</td></tr>'; } };
+            
+            window.handleUpgrade = async (planId, planName, planPrice) => {
+                if (!MERCADO_PAGO_PUBLIC_KEY || MERCADO_PAGO_PUBLIC_KEY === "SUA_PUBLIC_KEY_AQUI") return alert("Erro: Public Key do Mercado Pago não configurada no index.html.");
+                const modalElement = document.getElementById('paymentModal');
+                paymentModal = new bootstrap.Modal(modalElement);
+                document.getElementById('modalPlanName').textContent = planName;
+                document.getElementById('paymentError').textContent = '';
+                paymentModal.show();
+                if (currentBrickController) currentBrickController.unmount();
+                const mp = new MercadoPago(MERCADO_PAGO_PUBLIC_KEY);
+                
+                const settings = {
+                    initialization: { amount: planPrice, payer: { email: userEmail } },
+                    customization: { visual: { style: { theme: 'dark' } }, paymentMethods: { maxInstallments: 1 } },
+                    callbacks: {
+                        onReady: () => {},
+                        onError: (error) => { document.getElementById('paymentError').textContent = 'Erro nos dados do cartão.'; console.error(error); },
+                        // --- CORREÇÃO APLICADA AQUI ---
+                        onSubmit: async (formData) => {
+                            const cardToken = formData ? formData.token : null;
+                            if (!cardToken) {
+                                document.getElementById('paymentError').textContent = 'Não foi possível gerar o token do cartão.';
+                                return;
+                            }
+                            
+                            const submitButton = document.querySelector('#cardPaymentBrick_container [type="submit"]');
+                            if (submitButton) {
+                                submitButton.disabled = true;
+                                submitButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processando...';
+                            }
+
+                            try {
+                                await apiCall('/plan/upgrade', 'POST', { new_plan_id: planId, card_token_id: cardToken });
+                                alert(`Assinatura do plano ${planName} ativada!`);
+                                paymentModal.hide();
+                                fetchPlanStatus();
+                            } catch (error) {
+                                document.getElementById('paymentError').textContent = error.message;
+                                if (submitButton) {
+                                    submitButton.disabled = false;
+                                    submitButton.innerHTML = `Assinar por R$ ${planPrice.toFixed(2)}`;
+                                }
+                            }
+                        },
+                    },
+                };
+                currentBrickController = await mp.bricks().create('cardPayment', 'cardPaymentBrick_container', settings);
+            };
+            
+            const showAuthSection = () => { authSection.style.display = 'block'; mainSection.style.display = 'none'; userInfo.style.display = 'none'; };
+            const showMainApp = () => { authSection.style.display = 'none'; mainSection.style.display = 'block'; userInfo.style.display = 'block'; userEmailEl.textContent = userEmail; fetchPlanStatus(); fetchHistory(); };
+            
+            loginForm.addEventListener('submit', (e) => { e.preventDefault(); handleLogin(loginEmail.value, loginPassword.value); });
+            registerForm.addEventListener('submit', (e) => { e.preventDefault(); handleRegister(registerEmail.value, registerPassword.value); });
+            logoutButton.addEventListener('click', handleLogout);
+            refreshHistoryBtn.addEventListener('click', fetchHistory);
+            sendMessageForm.addEventListener('submit', async (e) => { e.preventDefault(); const p = { to: toNumber.value, message: messageContent.value, media_url: mediaUrl.value }; if (!p.to || (!p.message && !p.media_url)) return alert('Preencha os campos.'); try { await apiCall('/messages/send', 'POST', p); alert('Mensagem enviada!'); sendMessageForm.reset(); fetchPlanStatus(); setTimeout(fetchHistory, 2000); } catch (e) {} });
+            sendBatchForm.addEventListener('submit', async (e) => { e.preventDefault(); const contacts = batchContacts.value.trim().split('\n').map(l => { const p = l.split(','); return p.length < 2 ? null : { to: p[0].trim(), message: p.slice(1).join(',').trim() }; }).filter(Boolean); if (!contacts.length) return alert('Nenhum contato válido.'); try { await apiCall('/messages/send-batch', 'POST', { contacts }); alert('Lote processado.'); sendBatchForm.reset(); fetchPlanStatus(); setTimeout(fetchHistory, 2000); } catch (e) {} });
+
+            fetchAvailablePlans();
+            if (authToken) showMainApp(); else showAuthSection();
+        });
+    </script>
+</body>
+</html>
