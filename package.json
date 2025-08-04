@@ -17,19 +17,26 @@
   "author": "Gemini",
   "license": "ISC",
   "dependencies": {
+    "@prisma/client": "^6.13.0",
     "@wppconnect-team/wppconnect": "^1.29.0",
     "bcrypt": "^5.1.1",
+    "bullmq": "^5.56.9",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
+    "handlebars": "^4.7.8",
     "helmet": "^8.1.0",
+    "ioredis": "^5.7.0",
     "jsonwebtoken": "^9.0.2",
+    "node-cron": "^4.2.1",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.6",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "^3.0.2",
+    "prisma": "^6.13.0"
   }
 }

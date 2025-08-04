@@ -1,0 +1,121 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                        Int           @id @default(autoincrement())
+  email                     String        @unique
+  password                  String
+  planId                    Int           @default(1) @map("plan_id")
+  messagesSent              Int           @default(0) @map("messages_sent")
+  resetDate                 DateTime?     @map("reset_date")
+  mercadopagoSubscriptionId String?       @map("mercadopago_subscription_id")
+  createdAt                 DateTime      @default(now()) @map("created_at")
+  plan                      Plan          @relation(fields: [planId], references: [id])
+  messages                  Message[]
+  templates                 Template[]
+  contacts                  Contact[]    
+  contactLists              ContactList[]
+  apiKeys                   ApiKey[]
+
+  @@map("users")
+}
+
+model Plan {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique
+  messageLimit  Int      @map("message_limit")
+  price         Float
+  features      String?
+  users         User[]
+
+  @@map("plans")
+}
+
+model Message {
+  id              Int       @id @default(autoincrement())
+  userId          Int       @map("user_id")
+  numberTo        String    @map("number_to")
+  messageContent  String?   @map("message_content")
+  mediaUrl        String?   @map("media_url")
+  status          String
+  sentByNumber    String    @map("sent_by_number")
+  errorMessage    String?   @map("error_message")
+  sentAt          DateTime  @default(now()) @map("sent_at")
+  user            User      @relation(fields: [userId], references: [id])
+
+  @@map("messages")
+}
+
+model NumbersPool {
+  id          String    @id
+  phoneNumber String    @unique @map("phone_number")
+  status      String
+  lastUsed    DateTime? @map("last_used")
+  sessionData String?   @map("session_data")
+
+  @@map("numbers_pool")
+}
+
+// Novo modelo para Templates de Mensagem
+model Template {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  name      String
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, name]) // Garante que o nome do template seja único por usuário
+  @@map("templates")
+}
+
+model Contact {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  name      String
+  number    String   @unique // O número do contato deve ser único por usuário
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user  User           @relation(fields: [userId], references: [id])
+  lists ContactList[]  @relation("ContactToList") // Relacionamento com listas
+
+  @@unique([userId, number])
+  @@map("contacts")
+}
+
+model ContactList {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  name        String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id])
+  contacts Contact[] @relation("ContactToList") // Relacionamento com contatos
+
+  @@unique([userId, name])
+  @@map("contact_lists")
+}
+
+model ApiKey {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  key       String   @unique // A chave de API, que será um hash
+  prefix    String   @unique // Os primeiros caracteres da chave, para exibição
+  createdAt DateTime @default(now()) @map("created_at")
+  lastUsed  DateTime? @map("last_used")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("api_keys")
+}
