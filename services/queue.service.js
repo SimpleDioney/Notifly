@@ -11,7 +11,6 @@ const connection = new IORedis({
     maxRetriesPerRequest: null, // Necessário para BullMQ
 });
 
-connection.on('connect', () => logger.info('Conectado ao Redis para a fila.'));
 connection.on('error', (err) => logger.error('Erro de conexão com o Redis:', err));
 
 // Cria a fila de mensagens
@@ -34,4 +33,5 @@ async function addMessageToQueue(data, opts = {}) {
 module.exports = {
     messageQueue,
     addMessageToQueue,
+
 };
