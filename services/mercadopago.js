@@ -19,61 +19,28 @@ const planIdMap = {
 };
 
 /**
- * Busca todas as assinaturas ativas na conta do Mercado Pago.
- * @returns {Promise<Map<string, object>>} - Um Map onde a chave é o ID da assinatura e o valor é o objeto da assinatura.
+ * Cria a assinatura diretamente na API do Mercado Pago usando um card_token_id.
+ * @param {string} planName - O nome do plano.
+ * @param {string} planId - O ID do plano na sua API.
+ * @param {string} userEmail - O e-mail do usuário.
+ * @param {string} cardTokenId - O token do cartão gerado pelo Brick.
+ * @returns {Promise<object|null>} - Retorna o objeto da assinatura criada.
  */
-async function getAllActiveSubscriptions() {
-    const activeSubscriptions = new Map();
-    let offset = 0;
-    const limit = 50;
-    let total = 0;
-
-    try {
-        do {
-            const response = await apiClient.get('/preapproval/search', {
-                params: {
-                    status: 'authorized',
-                    limit: limit,
-                    offset: offset
-                }
-            });
-            
-            const results = response.data.results || [];
-            // A chave do Map agora é o ID da assinatura, que sempre está presente.
-            results.forEach(sub => {
-                if (sub.id) {
-                    activeSubscriptions.set(sub.id, sub);
-                }
-            });
-
-            total = response.data.paging.total;
-            offset += results.length;
-
-        } while (offset < total);
-
-        logger.info(`Encontradas ${activeSubscriptions.size} assinaturas ativas no Mercado Pago.`);
-        return activeSubscriptions;
-
-    } catch (error) {
-        const errorData = error.response ? error.response.data : error.message;
-        logger.error('Erro ao buscar todas as assinaturas ativas no Mercado Pago:', JSON.stringify(errorData, null, 2));
-        return new Map();
-    }
-}
-
 async function createSubscription(planName, planId, userEmail, cardTokenId) {
     const preapproval_plan_id = planIdMap[planId];
     if (!preapproval_plan_id) {
         logger.error(`ID de plano do MP não encontrado para o plano local: ${planId}`);
         return null;
     }
+
     const body = {
         preapproval_plan_id,
         payer_email: userEmail,
         card_token_id: cardTokenId,
         reason: `Assinatura Plano ${planName}`,
-        status: 'authorized'
+        status: 'authorized' // Tentamos autorizar a assinatura imediatamente
     };
+
     try {
         const response = await apiClient.post('/preapproval', body);
         logger.info(`Assinatura criada com sucesso para ${userEmail} no plano ${planName}`);
@@ -81,10 +48,12 @@ async function createSubscription(planName, planId, userEmail, cardTokenId) {
     } catch (error) {
         const errorData = error.response ? error.response.data : error.message;
         logger.error('Erro ao criar assinatura no Mercado Pago:', JSON.stringify(errorData, null, 2));
+        // Lança o erro para que a rota possa capturá-lo e enviar uma resposta adequada
         throw new Error(errorData?.message || 'Falha ao processar pagamento.');
     }
 }
 
+// ... (getSubscriptionDetails permanece o mesmo) ...
 async function getSubscriptionDetails(subscriptionId) {
     try {
         const response = await apiClient.get(`/preapproval/${subscriptionId}`);
@@ -95,9 +64,4 @@ async function getSubscriptionDetails(subscriptionId) {
     }
 }
 
-module.exports = { 
-    createSubscription, 
-    getSubscriptionDetails, 
-    getAllActiveSubscriptions,
-    planIdMap 
-};
+module.exports = { createSubscription, getSubscriptionDetails, planIdMap };

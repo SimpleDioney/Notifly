@@ -1,152 +1,109 @@
+// routes/plans.routes.js
+// Define os endpoints para consulta e gerenciamento de planos.
+
 const express = require('express');
-const { PrismaClient } = require('@prisma/client');
+const { getDb } = require('../services/database');
 const authMiddleware = require('../middleware/auth.middleware');
-const { upgradePlanSchema } = require('../schemas/plans.schemas');
-const validate = require('../middleware/validation.middleware');
-const { processPayment } = require('../services/mercadopago');
+const logger = require('../services/logger');
+const mercadopago = require('../services/mercadopago');
 
 const router = express.Router();
-const prisma = new PrismaClient();
 
-/**
- * @route   GET /plan/available
- * @desc    Lista todos os planos disponíveis
- * @access  Public
- */
-router.get('/available', async (req, res) => {
+// GET /plan/available
+// Lista todos os planos disponíveis. Não requer autenticação.
+router.get('/available', async (req, res, next) => {
     try {
-        const plansFromDb = await prisma.plan.findMany({
-            orderBy: {
-                price: 'asc'
-            }
-        });
-
-        // Mapeia o campo 'messageLimit' (do Prisma) para 'message_limit' (esperado pelo frontend)
-        const plans = plansFromDb.map(plan => ({
-            id: plan.id,
-            name: plan.name,
-            price: plan.price,
-            message_limit: plan.messageLimit,
-            features: plan.features,
-            createdAt: plan.createdAt,
-            updatedAt: plan.updatedAt
-        }));
-
+        const db = getDb();
+        const plans = await db.all('SELECT id, name, message_limit, price, features FROM plans ORDER BY price ASC');
         res.json(plans);
     } catch (error) {
-        console.error("Erro ao buscar planos:", error);
-        res.status(500).json({ error: 'Erro ao buscar planos.' });
+        next(error);
     }
 });
 
+// A partir daqui, todas as rotas exigem autenticação
+router.use(authMiddleware);
 
-/**
- * @route   GET /plan/status
- * @desc    Retorna o status do plano atual do usuário
- * @access  Private
- */
-router.get('/status', authMiddleware, async (req, res) => {
+// GET /plan/status
+// Mostra o status do plano atual do cliente.
+router.get('/status', async (req, res, next) => {
+    const userId = req.user.userId;
     try {
-        const user = await prisma.user.findUnique({
-            where: { id: req.user.userId },
-            include: { plan: true }
-        });
+        const db = getDb();
+        const status = await db.get(`
+            SELECT 
+                p.name as plan_name,
+                p.message_limit,
+                u.messages_sent,
+                u.reset_date
+            FROM users u
+            JOIN plans p ON u.plan_id = p.id
+            WHERE u.id = ?
+        `, userId);
 
-        if (!user) {
+        if (!status) {
             return res.status(404).json({ error: 'Usuário não encontrado.' });
         }
-
-        const messagesRemaining = user.plan.messageLimit === -1
-            ? 'Ilimitado'
-            : user.plan.messageLimit - user.messagesSent;
-
-        // FIX: Garante que uma data de renovação válida seja sempre retornada.
-        // Se a data de renovação for nula, calcula uma com base na data de criação do usuário.
-        let resetDate = user.planResetDate;
-        if (!resetDate) {
-            const createdAt = new Date(user.createdAt);
-            resetDate = new Date(createdAt.setMonth(createdAt.getMonth() + 1));
-        }
+        
+        // Calcula as mensagens restantes
+        const remaining = status.message_limit === -1 
+            ? 'Ilimitado' 
+            : status.message_limit - status.messages_sent;
 
         res.json({
-            plan_name: user.plan.name,
-            message_limit: user.plan.messageLimit,
-            messages_sent: user.messagesSent,
-            messages_remaining: messagesRemaining,
-            reset_date: resetDate
+            ...status,
+            messages_remaining: remaining
         });
     } catch (error) {
-        console.error("Erro ao obter status do plano:", error);
-        res.status(500).json({ error: 'Erro interno ao buscar status do plano.' });
+        next(error);
     }
 });
 
-/**
- * @route   POST /plan/upgrade
- * @desc    Faz o upgrade do plano do usuário
- * @access  Private
- */
-router.post('/upgrade', authMiddleware, validate(upgradePlanSchema), async (req, res) => {
-    const { new_plan_id, card_token_id, payment_method_id, issuer_id } = req.body;
+// POST /plan/upgrade
+// Permite que o cliente faça o upgrade do seu plano.
+router.post('/upgrade', async (req, res, next) => {
+    // Recebe o token do cartão do front-end
+    const { new_plan_id, card_token_id } = req.body;
+    const userId = req.user.userId;
+    const userEmail = req.user.email;
+
+    if (!new_plan_id || !card_token_id) {
+        return res.status(400).json({ error: 'O ID do plano e o token do cartão são obrigatórios.' });
+    }
 
     try {
-        const user = await prisma.user.findUnique({ where: { id: req.user.userId }});
-        const newPlan = await prisma.plan.findUnique({ where: { id: new_plan_id } });
-
-        if (!newPlan) {
+        const db = getDb();
+        const plan = await db.get('SELECT name FROM plans WHERE id = ?', new_plan_id);
+        if (!plan) {
             return res.status(404).json({ error: 'Plano não encontrado.' });
         }
 
-        // Se o plano for gratuito ou o preço for zero, atualiza diretamente
-        if (newPlan.price === 0) {
-             await prisma.user.update({
-                where: { id: req.user.userId },
-                data: {
-                    planId: new_plan_id,
-                    messagesSent: 0,
-                    planResetDate: new Date(new Date().setMonth(new Date().getMonth() + 1))
-                }
+        const subscription = await mercadopago.createSubscription(plan.name, new_plan_id, userEmail, card_token_id);
+
+        if (subscription && subscription.id) {
+            // Se a assinatura foi criada com sucesso, atualizamos nosso banco de dados.
+            // A lógica do webhook ainda serve como uma garantia secundária.
+            const newResetDate = new Date();
+            newResetDate.setMonth(newResetDate.getMonth() + 1);
+            await db.run(
+                'UPDATE users SET plan_id = ?, messages_sent = 0, reset_date = ? WHERE id = ?',
+                [new_plan_id, newResetDate.toISOString(), userId]
+            );
+            
+            res.json({ 
+                message: 'Assinatura criada e plano atualizado com sucesso!',
+                subscription_id: subscription.id,
+                status: subscription.status
             });
-            return res.status(200).json({ message: 'Plano atualizado com sucesso!' });
-        }
-
-        // Se for um plano pago, processa o pagamento
-        if (!card_token_id || !payment_method_id || !issuer_id) {
-            return res.status(400).json({ error: 'Dados do cartão são obrigatórios para planos pagos.' });
-        }
-
-        const paymentResult = await processPayment({
-            token: card_token_id,
-            issuer_id: issuer_id,
-            payment_method_id: payment_method_id,
-            transaction_amount: newPlan.price,
-            description: `Assinatura do plano ${newPlan.name}`,
-            payer: { email: user.email }
-        });
-
-        if (paymentResult.status === 'approved') {
-            await prisma.user.update({
-                where: { id: req.user.userId },
-                data: {
-                    planId: new_plan_id,
-                    messagesSent: 0,
-                    planResetDate: new Date(new Date().setMonth(new Date().getMonth() + 1)),
-                    lastPaymentId: paymentResult.id.toString()
-                }
-            });
-            return res.status(200).json({ message: 'Pagamento aprovado e plano atualizado!' });
         } else {
-            return res.status(400).json({
-                error: 'Pagamento falhou.',
-                details: paymentResult.status_detail
-            });
+             res.status(500).json({ error: 'Não foi possível criar a assinatura.' });
         }
-
     } catch (error) {
-        console.error("Erro no upgrade de plano:", error);
-        res.status(500).json({ error: 'Erro interno ao processar o upgrade.' });
+        // Retorna o erro específico do Mercado Pago para o front-end
+        res.status(400).json({ error: error.message });
     }
 });
 
 
 module.exports = router;
+
