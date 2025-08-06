@@ -19,12 +19,13 @@ const worker = new Worker('message-queue', async (job) => {
     logger.info(`Processando job ${job.id} para: ${to}`);
 
     try {
-        const connection = await wppconnect.getAvailableClient();
+        // Passa o número do destinatário para a função de seleção
+        const connection = await wppconnect.getAvailableClient(to);
         if (!connection) {
             throw new Error('Nenhum serviço de envio disponível no momento.');
         }
-        
-        const { client } = connection;
+
+        const { client, chipId } = connection;
         phoneNumber = connection.phoneNumber;
 
         if (media_url) {
@@ -43,19 +44,28 @@ const worker = new Worker('message-queue', async (job) => {
                 status: 'sent',
                 sentByNumber: phoneNumber,
                 sentAt: new Date(),
-                // Se foi agendada, podemos registrar a data original do agendamento
-                // scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
             },
         });
+
+        // CRIA o mapeamento de chip x contato caso não exista
+        await prisma.chipContactMap.upsert({
+            where: { contactNumber_chipId: { contactNumber: to, chipId } },
+            update: {},
+            create: {
+                contactNumber: to,
+                chipId: chipId,
+            }
+        });
+
 
         logger.info(`Mensagem enviada com sucesso para ${to.substring(0, 6)}... via ${phoneNumber}`);
 
     } catch (error) {
         logger.error(`Falha no job ${job.id} para ${userId}: ${error.message}`);
-        
+
         // Se a reserva foi feita, mas o envio falhou, revertemos
         await releaseMessageSlot(userId);
-        
+
         // Registramos a falha no banco
         await prisma.message.create({
             data: {
@@ -69,9 +79,9 @@ const worker = new Worker('message-queue', async (job) => {
                 sentAt: new Date(),
             },
         });
-        
+
         // Lança o erro para que o BullMQ possa registrar a falha do job
-        throw error; 
+        throw error;
     }
 }, { connection });
 

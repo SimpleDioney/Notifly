@@ -1,115 +1,189 @@
 // services/wppconnect.js
-// Gerencia a criação, inicialização e monitoramento das sessões do WppConnect.
-
 const wppconnect = require('@wppconnect-team/wppconnect');
-const { getDb } = require('./database');
+const { prisma } = require('./database');
 const logger = require('./logger');
+const websocketService = require('./websocket');
+const path = require('path');
 
 const clients = new Map();
 
-const numbersToConnect = [
-    { id: 'primary_number', number: '554399241054' },
-    // Adicione mais números conforme necessário
-];
-
-/**
- * Cria e inicializa um cliente WPPConnect para um número específico.
- */
 async function createClient(numberInfo) {
-    const { id, number } = numberInfo;
-    logger.info(`Iniciando criação do cliente para a sessão: ${id} (${number})`);
+    const { id, phoneNumber } = numberInfo;
+    logger.info(`Iniciando criação do cliente para a sessão: ${id} (${phoneNumber})`);
     
     try {
+        if (clients.has(id)) {
+            const oldClient = clients.get(id);
+            await oldClient.close();
+            clients.delete(id);
+            logger.info(`Sessão antiga ${id} foi fechada antes de recriar.`);
+        }
+
         const client = await wppconnect.create({
             session: id,
             catchQR: (base64Qr, asciiQR) => {
-                logger.info(`QR Code para a sessão ${id}. Escaneie para conectar.`);
-                console.log(asciiQR); // Mostra o QR Code no terminal
-                updateNumberStatus(id, 'disconnected', number); // Define como desconectado ao gerar QR
+                logger.info(`QR Code gerado para a sessão ${id}. Enviando para o frontend...`);
+                
+                // --- CORREÇÃO APLICADA AQUI ---
+                // A variável `base64Qr` já vem com o prefixo "data:image/png;base64,".
+                // Não é necessário adicioná-lo novamente.
+                websocketService.broadcast({
+                    type: 'qrcode',
+                    sessionId: id,
+                    data: base64Qr // Envia a string original sem modificação
+                });
+
+                updateNumberStatus(id, 'disconnected', phoneNumber);
             },
             statusFind: (statusSession, session) => {
                 logger.info(`Status da sessão ${session}: ${statusSession}`);
-                // A conexão só é confirmada quando o status for 'isLogged' ou 'inChat'
                 const isConnected = ['isLogged', 'inChat'].includes(statusSession);
-                updateNumberStatus(id, isConnected ? 'connected' : 'disconnected');
+                updateNumberStatus(id, isConnected ? 'connected' : 'disconnected', phoneNumber);
+                websocketService.broadcast({
+                    type: 'status',
+                    sessionId: session,
+                    status: statusSession
+                });
             },
             headless: true,
             devtools: false,
             useChrome: true,
             logQR: true,
+            puppeteerOptions: {
+                userDataDir: path.join(__dirname, '..', 'tokens', id),
+            },
+            browserArgs: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ]
         });
 
         clients.set(id, client);
-        logger.info(`Cliente para a sessão ${id} foi inicializado. Aguardando autenticação via QR Code...`);
+        logger.info(`Cliente para a sessão ${id} foi inicializado. Aguardando autenticação...`);
         return client;
 
     } catch (error) {
-        logger.error(`Erro ao criar cliente para a sessão ${id}:`, error);
-        await updateNumberStatus(id, 'error', number);
+        logger.error(`Erro ao criar cliente para a sessão ${id}: ${error.message}`);
+        await updateNumberStatus(id, 'error', phoneNumber);
     }
 }
 
-/**
- * Inicializa todos os clientes definidos em `numbersToConnect`.
- */
 async function initializeAllClients() {
-    logger.info('Inicializando todos os clientes WppConnect...');
-    const promises = numbersToConnect.map(num => createClient(num));
-    await Promise.all(promises);
-    logger.info('Processo de inicialização de clientes finalizado.');
-    
-    setInterval(monitorClientStatus, 60000);
-}
-
-/**
- * Atualiza o status de um número no banco de dados.
- */
-async function updateNumberStatus(id, status, phoneNumber = null) {
-    const db = getDb();
-    const phone = phoneNumber || (numbersToConnect.find(n => n.id === id) || {}).number;
-    if (!phone) {
-        logger.warn(`Não foi possível encontrar o número para o ID de sessão: ${id}`);
-        return;
-    }
-
+    logger.info('Inicializando todos os clientes a partir do banco de dados...');
     try {
-        const existing = await db.get('SELECT * FROM numbers_pool WHERE id = ?', id);
-        if (existing) {
-            await db.run('UPDATE numbers_pool SET status = ?, last_used = CURRENT_TIMESTAMP WHERE id = ?', [status, id]);
-        } else {
-            await db.run('INSERT INTO numbers_pool (id, phone_number, status) VALUES (?, ?, ?)', [id, phone, status]);
+        const numbersFromDb = await prisma.numbersPool.findMany();
+        if (numbersFromDb.length === 0) {
+            logger.warn('Nenhum chip encontrado no banco de dados para inicializar.');
+            return;
         }
-        logger.info(`Status do número ${phone} (${id}) atualizado para: ${status}`);
-    } catch (error) {
-        logger.error(`Erro ao atualizar status do número ${phone} no banco de dados:`, error);
+        const promises = numbersFromDb.map(num => createClient(num));
+        await Promise.all(promises);
+        logger.info('Processo de inicialização de clientes finalizado.');
+        
+        setInterval(monitorClientStatus, 60000);
+    } catch (dbError) {
+        logger.error('Erro ao buscar chips do banco de dados:', dbError);
     }
 }
 
-/**
- * Seleciona o melhor cliente disponível do pool para enviar uma mensagem.
- */
-async function getAvailableClient() {
-    const db = getDb();
+async function addAndInitializeChip({ id, phoneNumber }) {
+    logger.info(`Tentando adicionar novo chip: ${id} (${phoneNumber})`);
+    
+    const existingChipById = await prisma.numbersPool.findUnique({ where: { id } });
+    if (existingChipById) {
+        throw new Error(`Já existe um chip com a ID de sessão "${id}".`);
+    }
+    
+    const existingChipByNumber = await prisma.numbersPool.findUnique({ where: { phoneNumber } });
+    if (existingChipByNumber) {
+        throw new Error(`O número de telefone ${phoneNumber} já está registado.`);
+    }
+
+    const newChip = await prisma.numbersPool.create({
+        data: { id, phoneNumber, status: 'disconnected' },
+    });
+
+    await createClient(newChip);
+    
+    return newChip;
+}
+
+async function reconnectClient(id) {
+    logger.info(`Solicitação de reconexão recebida para a sessão: ${id}`);
+    const numberInfo = await prisma.numbersPool.findUnique({ where: { id } });
+
+    if (!numberInfo) {
+        logger.error(`Tentativa de reconectar uma sessão inválida: ${id}`);
+        throw new Error(`Chip com a ID de sessão "${id}" não foi encontrado no banco de dados.`);
+    }
+
+    await createClient(numberInfo);
+    return { message: `Processo de reconexão iniciado para ${id}. Verifique o frontend para o QR Code.` };
+}
+
+async function updateNumberStatus(id, status, phoneNumber = null) {
     try {
-        const bestNumber = await db.get(`
-            SELECT id, phone_number FROM numbers_pool 
-            WHERE status = 'connected' 
-            ORDER BY last_used ASC 
-            LIMIT 1
-        `);
+        let phone = phoneNumber;
+        if (!phone) {
+            const chipInDb = await prisma.numbersPool.findUnique({ where: { id } });
+            if (chipInDb) {
+                phone = chipInDb.phoneNumber;
+            } else {
+                logger.error(`Não foi possível atualizar o status para o chip ID ${id} porque ele não existe no DB e nenhum número de telefone foi fornecido.`);
+                return;
+            }
+        }
+
+        await prisma.numbersPool.upsert({
+            where: { id },
+            update: { status },
+            create: {
+                id,
+                phoneNumber: phone,
+                status,
+            },
+        });
+        logger.info(`Status do número com ID ${id} atualizado para: ${status}`);
+    } catch (error) {
+        logger.error(`Erro ao atualizar status do chip ${id} no banco de dados:`, error);
+    }
+}
+
+async function getAvailableClient(contactNumber) {
+    try {
+        const mapping = await prisma.chipContactMap.findFirst({
+            where: { contactNumber },
+        });
+
+        if (mapping && clients.has(mapping.chipId)) {
+            const client = clients.get(mapping.chipId);
+            const isConnected = await client.isConnected();
+            if (isConnected) {
+                logger.info(`Cliente selecionado via mapeamento para ${contactNumber}: ${mapping.chipId}`);
+                await prisma.numbersPool.update({
+                    where: { id: mapping.chipId },
+                    data: { lastUsed: new Date() },
+                });
+                const chipDetails = await prisma.numbersPool.findUnique({ where: { id: mapping.chipId } });
+                return { client, phoneNumber: chipDetails.phoneNumber, chipId: mapping.chipId };
+            }
+        }
+
+        const bestNumber = await prisma.numbersPool.findFirst({
+            where: { status: 'connected' },
+            orderBy: { lastUsed: 'asc' },
+        });
 
         if (bestNumber && clients.has(bestNumber.id)) {
-            logger.info(`Cliente selecionado para envio: ${bestNumber.id} (${bestNumber.phone_number})`);
-            await db.run('UPDATE numbers_pool SET last_used = CURRENT_TIMESTAMP WHERE id = ?', bestNumber.id);
-            return {
-                client: clients.get(bestNumber.id),
-                phoneNumber: bestNumber.phone_number
-            };
+            logger.info(`Cliente selecionado para novo mapeamento: ${bestNumber.id}`);
+            await prisma.numbersPool.update({
+                where: { id: bestNumber.id },
+                data: { lastUsed: new Date() },
+            });
+            return { client: clients.get(bestNumber.id), phoneNumber: bestNumber.phoneNumber, chipId: bestNumber.id };
         }
         
-        // Log aprimorado para depuração
-        const poolStatus = await db.all('SELECT id, phone_number, status FROM numbers_pool');
-        logger.warn('Nenhum cliente WppConnect disponível para envio.', { poolStatus });
+        logger.warn('Nenhum cliente WppConnect disponível para envio.');
         return null;
 
     } catch (error) {
@@ -118,20 +192,16 @@ async function getAvailableClient() {
     }
 }
 
-/**
- * Monitora o status de todos os clientes e tenta reconectar se necessário.
- */
 async function monitorClientStatus() {
     logger.info('Executando verificação de saúde das sessões...');
     for (const [id, client] of clients.entries()) {
         try {
             const isConnected = await client.isConnected();
-            if (!isConnected) {
-                logger.warn(`Sessão ${id} está desconectada. Tentando reconectar...`);
-                await updateNumberStatus(id, 'disconnected');
-            } else {
-                 await updateNumberStatus(id, 'connected');
+            await updateNumberStatus(id, isConnected ? 'connected' : 'disconnected');
+            if (isConnected) {
                  logger.info(`Sessão ${id} está saudável e conectada.`);
+            } else {
+                 logger.warn(`Sessão ${id} está desconectada.`);
             }
         } catch (error) {
             logger.error(`Erro ao verificar status da sessão ${id}:`, error);
@@ -142,6 +212,8 @@ async function monitorClientStatus() {
 
 module.exports = {
     initializeAllClients,
+    addAndInitializeChip,
     getAvailableClient,
+    reconnectClient,
     clients,
 };

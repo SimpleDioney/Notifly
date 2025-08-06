@@ -8,10 +8,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Enum para os cargos de usuário
+enum Role {
+  USER
+  ADMIN
+}
+
 model User {
   id                        Int           @id @default(autoincrement())
   email                     String        @unique
   password                  String
+  role                      Role          @default(USER)
+  isBanned                  Boolean       @default(false) // NOVO: Campo para banir
   planId                    Int           @default(1) @map("plan_id")
   messagesSent              Int           @default(0) @map("messages_sent")
   resetDate                 DateTime?     @map("reset_date")
@@ -20,7 +28,7 @@ model User {
   plan                      Plan          @relation(fields: [planId], references: [id])
   messages                  Message[]
   templates                 Template[]
-  contacts                  Contact[]    
+  contacts                  Contact[]
   contactLists              ContactList[]
   apiKeys                   ApiKey[]
 
@@ -63,18 +71,39 @@ model NumbersPool {
   @@map("numbers_pool")
 }
 
+// Novo modelo para o mapeamento de Chip x Contato
+model ChipContactMap {
+  id        Int    @id @default(autoincrement())
+  contactNumber String @map("contact_number")
+  chipId    String @map("chip_id")
+
+  @@unique([contactNumber, chipId])
+  @@map("chip_contact_map")
+}
+
 // Novo modelo para Templates de Mensagem
 model Template {
   id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
+  userId    Int?     // AGORA OPCIONAL: Templates globais não têm userId
   name      String
   content   String
+  isGlobal  Boolean  @default(false) // NOVO: Para marcar templates globais
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
-  user      User     @relation(fields: [userId], references: [id])
+  user      User?    @relation(fields: [userId], references: [id])
 
-  @@unique([userId, name]) // Garante que o nome do template seja único por usuário
+  @@unique([userId, name])
   @@map("templates")
+}
+
+model Announcement {
+  id        Int      @id @default(autoincrement())
+  title     String
+  content   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("announcements")
 }
 
 model Contact {

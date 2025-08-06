@@ -1,0 +1,10 @@
+{
+  "watch": ["."],
+  "ignore": [
+    "tokens/*",
+    "prisma/whatsapp_api.db*",
+    "combined.log",
+    "error.log"
+  ],
+  "ext": "js,json,prisma"
+}
