@@ -16,11 +16,30 @@ async function apiKeyMiddleware(req, res, next) {
 
         const keyData = await prisma.apiKey.findUnique({
             where: { key: hashedKey },
-            include: { user: true }, // Pega os dados do usuário dono da chave
+            include: { user: true },
         });
 
         if (!keyData) {
             return res.status(403).json({ error: 'Chave de API inválida.' });
+        }
+
+        // Verificações avançadas: status, janela de validade, whitelist de IP
+        const now = new Date();
+        if (keyData.status === 'REVOKED') {
+            return res.status(403).json({ error: 'Chave de API revogada.' });
+        }
+        if (keyData.validFrom && now < new Date(keyData.validFrom)) {
+            return res.status(403).json({ error: 'Chave de API ainda não está válida.' });
+        }
+        if (keyData.validTo && now > new Date(keyData.validTo)) {
+            return res.status(403).json({ error: 'Chave de API expirada.' });
+        }
+        if (keyData.allowedIps) {
+            const list = keyData.allowedIps.split(',').map(s => s.trim()).filter(Boolean);
+            const reqIp = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+            if (list.length > 0 && !list.includes(reqIp)) {
+                return res.status(403).json({ error: 'IP não autorizado para esta chave.' });
+            }
         }
 
         // Anexa o usuário à requisição para que a rota de trigger saiba quem está fazendo a chamada

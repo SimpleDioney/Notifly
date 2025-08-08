@@ -25,16 +25,25 @@ router.get('/announcements', async (req, res, next) => {
 router.get('/templates', async (req, res, next) => {
     const userId = req.user.userId;
     try {
-        const userTemplates = await prisma.template.findMany({
+    const userTemplates = await prisma.template.findMany({
             where: { userId },
         });
         const globalTemplates = await prisma.template.findMany({
-            where: { isGlobal: true },
+            where: {
+                OR: [
+                    { isGlobal: true },
+                    { userId: null }
+                ]
+            },
+            orderBy: { createdAt: 'desc' }
         });
-        res.json({
-            myTemplates: userTemplates,
-            globalTemplates: globalTemplates,
-        });
+        // placeholders obrigatórios (extração simples)
+        const extractPlaceholders = (content) => {
+            const matches = content.match(/{{\s*([\w\.]+)\s*}}/g) || [];
+            return Array.from(new Set(matches.map(m => m.replace(/[{}\s]/g,'').trim())));
+        };
+        const withMeta = (arr) => arr.map(t => ({ ...t, placeholders: extractPlaceholders(t.content) }));
+        res.json({ myTemplates: withMeta(userTemplates), globalTemplates: withMeta(globalTemplates) });
     } catch (error) {
         next(error);
     }

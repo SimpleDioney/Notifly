@@ -60,6 +60,28 @@ router.get('/', async (req, res, next) => {
     }
 });
 
+// PUT /apikeys/:id - Atualizar status/validade/whitelist da chave de API
+router.put('/:id', async (req, res, next) => {
+    const { id } = req.params;
+    const userId = req.user.userId;
+    const { status, validFrom, validTo, allowedIps } = req.body || {};
+    try {
+        const updated = await prisma.apiKey.updateMany({
+            where: { id: parseInt(id), userId },
+            data: {
+                status: status || undefined,
+                validFrom: validFrom ? new Date(validFrom) : undefined,
+                validTo: validTo ? new Date(validTo) : undefined,
+                allowedIps: typeof allowedIps === 'string' ? allowedIps : undefined,
+            }
+        });
+        if (updated.count === 0) return res.status(404).json({ error: 'Chave não encontrada.' });
+        res.json({ message: 'Chave atualizada.' });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // DELETE /apikeys/:id - Revogar (deletar) uma chave de API
 router.delete('/:id', async (req, res, next) => {
     const { id } = req.params;

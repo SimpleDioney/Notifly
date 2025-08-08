@@ -26,6 +26,11 @@ const apiKeysRoutes = require('./routes/apikeys.routes');
 const triggersRoutes = require('./routes/triggers.routes');
 const adminRoutes = require('./routes/admin.routes');
 const platformRoutes = require('./routes/platform.routes');
+const tagsRoutes = require('./routes/tags.routes');
+const segmentsRoutes = require('./routes/segments.routes');
+const shortlinksRoutes = require('./routes/shortlinks.routes');
+const reportsRoutes = require('./routes/reports.routes');
+const usersRoutes = require('./routes/users.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -40,7 +45,7 @@ app.set('trust proxy', 1);
 app.use(cors({
   origin: '*', // Permite todas as origens (ideal para desenvolvimento com Ngrok)
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
 }));
 // --- FIM DA CORREÇÃO ---
 
@@ -59,7 +64,7 @@ app.use(express.json());
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 100,
+    max: 1000,
     standardHeaders: true,
     legacyHeaders: false,
     message: 'Muitas requisições enviadas deste IP, por favor tente novamente após 15 minutos.',
@@ -88,6 +93,11 @@ async function startServer() {
             });
         });
 
+        // Healthcheck simples para monitoramento/infra
+        app.get('/healthz', (req, res) => {
+            res.status(200).json({ ok: true });
+        });
+
         app.use('/auth', authRoutes);
         app.use('/plan', plansRoutes);
         app.use('/messages', messagesRoutes);
@@ -95,11 +105,24 @@ async function startServer() {
         app.use('/templates', templatesRoutes);
         app.use('/contacts', contactsRoutes);
         app.use('/lists', listsRoutes);
+        app.use('/tags', tagsRoutes);
+        app.use('/segments', segmentsRoutes);
+        // Public redirect /s/:slug (montado na raiz)
+        app.use('/', shortlinksRoutes);
+        // CRUD autenticado montado em /shortlinks
+        app.use('/shortlinks', shortlinksRoutes);
         app.use('/apikeys', apiKeysRoutes);
+        app.use('/reports', reportsRoutes);
+        app.use('/users', usersRoutes);
         app.use('/triggers', triggersRoutes);
         app.use('/admin/queues', queueBoard.getRouter());
         app.use('/admin', adminRoutes);
         app.use('/platform', platformRoutes);
+
+        // 404 handler para rotas inexistentes
+        app.use((req, res) => {
+            res.status(404).json({ error: 'Rota não encontrada' });
+        });
 
         server.listen(PORT, () => {
             logger.info(`Servidor rodando na porta ${PORT}`);

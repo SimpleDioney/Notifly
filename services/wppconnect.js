@@ -171,7 +171,10 @@ async function getAvailableClient(contactNumber) {
 
         const bestNumber = await prisma.numbersPool.findFirst({
             where: { status: 'connected' },
-            orderBy: { lastUsed: 'asc' },
+            orderBy: [
+                { reputationScore: 'desc' },
+                { lastUsed: 'asc' },
+            ],
         });
 
         if (bestNumber && clients.has(bestNumber.id)) {

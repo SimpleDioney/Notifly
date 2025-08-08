@@ -45,7 +45,7 @@ router.post('/webhook', async (req, res) => {
                         
                         logger.info(`Plano do usuário ${user.email} atualizado para ${localPlanId} via webhook.`);
                         
-                        const connection = await wppconnect.getAvailableClient();
+                        const connection = await wppconnect.getAvailableClient(YOUR_WHATSAPP_NUMBER);
                         if (connection) {
                             const message = `🎉 Nova assinatura confirmada!\n\n` +
                                             `Cliente: ${subscription.payer_email}\n` +

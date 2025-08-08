@@ -6,6 +6,11 @@ const { prisma } = require('../services/database');
 const wppconnect = require('../services/wppconnect');
 const authMiddleware = require('../middleware/auth.middleware');
 const logger = require('../services/logger');
+const validate = require('../middleware/validation.middleware');
+const { sendSchema, historySchema } = require('../schemas/messages.schemas');
+const { parsePhoneNumberFromString } = require('libphonenumber-js');
+const { addMessageToQueue } = require('../services/queue.service');
+const Handlebars = require('handlebars');
 
 const router = express.Router();
 
@@ -98,7 +103,7 @@ async function isSpam(userId, to, message) {
 
 
 // POST /messages/send
-router.post('/send', async (req, res, next) => {
+router.post('/send', validate(sendSchema), async (req, res, next) => {
     const { to, message, media_url } = req.body;
     const userId = req.user.userId;
     let phoneNumber = 'N/A';
@@ -113,13 +118,10 @@ router.post('/send', async (req, res, next) => {
             return res.status(429).json({ error: 'Mensagem idêntica enviada para o mesmo número recentemente. Evite spam.' });
         }
         
-        if (!(await reserveMessageSlot(userId))) {
-            return res.status(429).json({ error: 'Limite de mensagens do seu plano atingido.' });
-        }
+        // Não consumimos cota aqui: o consumo acontece no worker (fonte única de verdade)
 
-        const connection = await wppconnect.getAvailableClient();
+        const connection = await wppconnect.getAvailableClient(to);
         if (!connection) {
-            await releaseMessageSlot(userId);
             return res.status(503).json({ error: 'Nenhum serviço de envio está disponível no momento. Tente novamente mais tarde.' });
         }
         const { client } = connection;
@@ -149,7 +151,7 @@ router.post('/send', async (req, res, next) => {
 
     } catch (error) {
         logger.error(`Falha ao enviar mensagem para ${userId}: ${error.message}`);
-        await releaseMessageSlot(userId);
+        // Nada a reverter aqui, já que a cota é consumida no worker
         
         await prisma.message.create({
             data: {
@@ -166,89 +168,141 @@ router.post('/send', async (req, res, next) => {
     }
 });
 
-// POST /messages/send-batch
-router.post('/send-batch', async (req, res, next) => {
-    const { contacts } = req.body;
+// POST /messages/queue - Enfileirar envio (agendamento opcional)
+router.post('/queue', validate(sendSchema), async (req, res, next) => {
+    let { to, message, media_url, scheduledAt } = req.body;
     const userId = req.user.userId;
 
-    if (!Array.isArray(contacts) || contacts.length === 0) {
-        return res.status(400).json({ error: 'O campo "contacts" deve ser um array não vazio.' });
+    try {
+        // Normalização de número (BR default se não vier com código)
+        try {
+            const parsed = parsePhoneNumberFromString(to, 'BR');
+            if (parsed && parsed.isValid()) {
+                to = parsed.number.replace('+', '');
+            }
+        } catch {}
+        // Aceita agendamento opcional via scheduledAt ISO
+        const opts = {};
+        if (scheduledAt) {
+            const delay = Math.max(0, new Date(scheduledAt).getTime() - Date.now());
+            opts.delay = delay;
+        }
+        // Não aguardar para evitar travar o request em ambientes sem Redis estável
+        addMessageToQueue({ to, message, media_url, userId, scheduledAt }, opts)
+            .catch((err) => logger.error('Falha ao enfileirar mensagem:', err));
+        return res.status(202).json({ status: 'accepted', message: 'Mensagem enfileirada.' });
+    } catch (error) {
+        next(error);
     }
-    if (contacts.length > 100) {
+});
+
+// POST /messages/send-batch
+router.post('/send-batch', async (req, res, next) => {
+    const { contacts, templateName, contactListId, segmentId, suppressionListId, defaultVariables } = req.body;
+    const userId = req.user.userId;
+
+    // Suporta dois modos: por lista + template OU por contacts explícitos
+    if (!(templateName && (contactListId || segmentId)) && (!Array.isArray(contacts) || contacts.length === 0)) {
+        return res.status(400).json({ error: 'Envie "templateName" e ("contactListId" ou "segmentId") OU um array "contacts" não vazio.' });
+    }
+    if (Array.isArray(contacts) && contacts.length > 100) {
         return res.status(400).json({ error: 'O envio em lote é limitado a 100 contatos por vez.' });
     }
     
     const results = [];
 
-    for (const contact of contacts) {
-        const { to, message, media_url } = contact;
-        let status = 'pending';
-        let details = '';
-        let phoneNumber = 'N/A';
-
-        if (!to || (!message && !media_url)) {
-            status = 'failed';
-            details = 'Campos obrigatórios ausentes.';
-        } else if (await isSpam(userId, to, message)) {
-            status = 'failed';
-            details = 'Envio duplicado (spam).';
-        } else if (!(await reserveMessageSlot(userId))) {
-            status = 'failed';
-            details = 'Limite do plano atingido.';
-        } else {
-            try {
-                const connection = await wppconnect.getAvailableClient();
-                if (!connection) {
-                    await releaseMessageSlot(userId);
-                    status = 'failed';
-                    details = 'Serviço indisponível.';
+    let contactsToProcess = contacts;
+    try {
+        if (templateName && (contactListId || segmentId)) {
+            // Base de contatos por lista ou segmento
+            let baseContacts = [];
+            if (contactListId) {
+                baseContacts = await prisma.contact.findMany({
+                    where: { userId, lists: { some: { id: contactListId } } },
+                    select: { id: true, number: true, name: true },
+                });
+            } else if (segmentId) {
+                const segment = await prisma.segment.findFirst({ where: { id: segmentId, userId } });
+                if (!segment) return res.status(404).json({ error: 'Segmento não encontrado.' });
+                if (segment.type === 'STATIC') {
+                    const members = await prisma.segmentMember.findMany({
+                        where: { segmentId: segment.id },
+                        include: { contact: { select: { id: true, number: true, name: true } } },
+                    });
+                    baseContacts = members.map(m => m.contact);
                 } else {
-                    const { client } = connection;
-                    phoneNumber = connection.phoneNumber;
-                    if (media_url) {
-                        await client.sendImage(to, media_url, 'media', message);
-                    } else {
-                        await client.sendText(to, message);
-                    }
-                    status = 'sent';
-                    details = 'Enviado com sucesso.';
-                    await prisma.message.create({
-                        data: {
-                            userId,
-                            numberTo: to,
-                            messageContent: message,
-                            mediaUrl: media_url,
-                            status: 'sent',
-                            sentByNumber: phoneNumber,
-                        },
+                    // DYNAMIC: aplica filtro JSON simples em attributes (match por chave/valor exato)
+                    const filter = segment.filter || {};
+                    baseContacts = await prisma.contact.findMany({
+                        where: { userId },
+                        select: { id: true, number: true, name: true, attributes: true },
+                    });
+                    baseContacts = baseContacts.filter(c => {
+                        if (!filter || Object.keys(filter).length === 0) return true;
+                        if (!c.attributes) return false;
+                        try {
+                            const attrs = typeof c.attributes === 'string' ? JSON.parse(c.attributes) : c.attributes;
+                            return Object.entries(filter).every(([k, v]) => attrs?.[k] === v);
+                        } catch { return false; }
                     });
                 }
-            } catch (error) {
-                await releaseMessageSlot(userId);
-                status = 'failed';
-                details = error.message;
-                await prisma.message.create({
-                    data: {
-                        userId,
-                        numberTo: to,
-                        messageContent: message,
-                        mediaUrl: media_url,
-                        status: 'failed',
-                        errorMessage: details,
-                        sentByNumber: phoneNumber,
-                    },
-                });
             }
+            // Suppression por lista
+            if (suppressionListId) {
+                const suppressed = await prisma.contact.findMany({
+                    where: { userId, lists: { some: { id: suppressionListId } } },
+                    select: { id: true },
+                });
+                const suppressedIds = new Set(suppressed.map(s => s.id));
+                baseContacts = baseContacts.filter(c => !suppressedIds.has(c.id));
+            }
+            const listContacts = baseContacts;
+            if (listContacts.length === 0) {
+                return res.status(400).json({ error: 'A lista selecionada não possui contatos.' });
+            }
+            const template = await prisma.template.findFirst({
+                where: {
+                    name: templateName,
+                    OR: [{ userId }, { isGlobal: true }]
+                }
+            });
+            if (!template) {
+                return res.status(404).json({ error: `Template '${templateName}' não encontrado.` });
+            }
+            const compiled = Handlebars.compile(template.content);
+            contactsToProcess = listContacts.map((c) => ({
+                to: c.number,
+                message: compiled({ nome: c.name, ...(defaultVariables || {}) })
+            }));
         }
-        results.push({ to, status, details });
+    } catch (err) {
+        return next(err);
     }
-    
-    logger.info(`Processamento de lote finalizado para o usuário ${userId}. Total: ${contacts.length}`);
-    res.status(207).json({ report: results });
+
+    // Novo fluxo: enfileira todos para processamento assíncrono
+    let enqueued = 0;
+    for (const contact of contactsToProcess) {
+        const { to, message, media_url } = contact;
+        if (!to || (!message && !media_url)) {
+            results.push({ to, status: 'failed', details: 'Campos obrigatórios ausentes.' });
+            continue;
+        }
+        await addMessageToQueue({ to, message, media_url, userId, templateName: templateName || null });
+        // auditoria leve do enfileiramento
+        try { logger.audit(userId, 'enqueue_message', { to }); } catch {}
+        enqueued++;
+        results.push({ to, status: 'queued', details: 'Mensagem enfileirada.' });
+    }
+
+    if (enqueued === 0) {
+        return res.status(400).json({ error: 'Nenhuma mensagem válida para enfileirar.' });
+    }
+    logger.info(`Lote enfileirado para o usuário ${userId}. Total: ${contactsToProcess ? contactsToProcess.length : 0}`);
+    res.status(202).json({ message: 'Mensagens enfileiradas.', enqueued, report: results });
 });
 
 // GET /messages/history
-router.get('/history', async (req, res, next) => {
+router.get('/history', validate(historySchema), async (req, res, next) => {
     const userId = req.user.userId;
     const { startDate, endDate, status, number_to } = req.query;
 

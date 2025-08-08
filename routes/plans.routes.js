@@ -1,12 +1,11 @@
 const express = require('express');
-const { PrismaClient } = require('@prisma/client');
+const { prisma } = require('../services/database');
 const authMiddleware = require('../middleware/auth.middleware');
 const { upgradePlanSchema } = require('../schemas/plans.schemas');
 const validate = require('../middleware/validation.middleware');
-const { processPayment } = require('../services/mercadopago');
+const { createSubscription } = require('../services/mercadopago');
 
 const router = express.Router();
-const prisma = new PrismaClient();
 
 /**
  * @route   GET /plan/available
@@ -27,9 +26,7 @@ router.get('/available', async (req, res) => {
             name: plan.name,
             price: plan.price,
             message_limit: plan.messageLimit,
-            features: plan.features,
-            createdAt: plan.createdAt,
-            updatedAt: plan.updatedAt
+            features: plan.features
         }));
 
         res.json(plans);
@@ -62,7 +59,7 @@ router.get('/status', authMiddleware, async (req, res) => {
 
         // FIX: Garante que uma data de renovação válida seja sempre retornada.
         // Se a data de renovação for nula, calcula uma com base na data de criação do usuário.
-        let resetDate = user.planResetDate;
+        let resetDate = user.resetDate;
         if (!resetDate) {
             const createdAt = new Date(user.createdAt);
             resetDate = new Date(createdAt.setMonth(createdAt.getMonth() + 1));
@@ -87,7 +84,7 @@ router.get('/status', authMiddleware, async (req, res) => {
  * @access  Private
  */
 router.post('/upgrade', authMiddleware, validate(upgradePlanSchema), async (req, res) => {
-    const { new_plan_id, card_token_id, payment_method_id, issuer_id } = req.body;
+    const { new_plan_id, card_token_id } = req.body;
 
     try {
         const user = await prisma.user.findUnique({ where: { id: req.user.userId }});
@@ -110,35 +107,27 @@ router.post('/upgrade', authMiddleware, validate(upgradePlanSchema), async (req,
             return res.status(200).json({ message: 'Plano atualizado com sucesso!' });
         }
 
-        // Se for um plano pago, processa o pagamento
-        if (!card_token_id || !payment_method_id || !issuer_id) {
-            return res.status(400).json({ error: 'Dados do cartão são obrigatórios para planos pagos.' });
+        // Se for um plano pago, cria assinatura no Mercado Pago
+        if (!card_token_id) {
+            return res.status(400).json({ error: 'O campo card_token_id é obrigatório para planos pagos.' });
         }
 
-        const paymentResult = await processPayment({
-            token: card_token_id,
-            issuer_id: issuer_id,
-            payment_method_id: payment_method_id,
-            transaction_amount: newPlan.price,
-            description: `Assinatura do plano ${newPlan.name}`,
-            payer: { email: user.email }
-        });
+        const subscription = await createSubscription(newPlan.name, new_plan_id, user.email, card_token_id);
 
-        if (paymentResult.status === 'approved') {
+        if (subscription && subscription.status === 'authorized') {
             await prisma.user.update({
                 where: { id: req.user.userId },
                 data: {
                     planId: new_plan_id,
                     messagesSent: 0,
-                    planResetDate: new Date(new Date().setMonth(new Date().getMonth() + 1)),
-                    lastPaymentId: paymentResult.id.toString()
+                    resetDate: new Date(new Date().setMonth(new Date().getMonth() + 1)),
+                    mercadopagoSubscriptionId: subscription.id
                 }
             });
-            return res.status(200).json({ message: 'Pagamento aprovado e plano atualizado!' });
+            return res.status(200).json({ message: 'Plano atualizado! Assinatura criada e autorizada no Mercado Pago.' });
         } else {
             return res.status(400).json({
-                error: 'Pagamento falhou.',
-                details: paymentResult.status_detail
+                error: 'Falha ao criar a assinatura no Mercado Pago.'
             });
         }
 

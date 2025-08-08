@@ -2,11 +2,16 @@
 const { z } = require('zod');
 
 const sendSchema = z.object({
-    body: z.object({
+  body: z.object({
         to: z.string({ required_error: 'O destinatário ("to") é obrigatório' }),
         message: z.string().optional(),
         media_url: z.string().url('A URL da mídia é inválida').optional(),
-        scheduledAt: z.string().datetime({ message: "Formato de data de agendamento inválido." }).optional(), // Novo campo
+        // Aceita formatos retornados por input datetime-local (ex: YYYY-MM-DDTHH:mm) ou ISO completo
+        scheduledAt: z.string().refine((val) => {
+            if (!val) return true;
+            const timestamp = Date.parse(val);
+            return !Number.isNaN(timestamp);
+        }, { message: 'Formato de data de agendamento inválido.' }).optional(),
     }).refine(data => data.message || data.media_url, {
         message: 'O conteúdo ("message", "media_url" ou "media_url") é obrigatório',
     }),

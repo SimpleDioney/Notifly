@@ -4,6 +4,7 @@ const authMiddleware = require('../middleware/auth.middleware');
 const validate = require('../middleware/validation.middleware');
 const { contactSchema } = require('../schemas/contacts.schemas');
 const logger = require('../services/logger');
+const { parsePhoneNumberFromString } = require('libphonenumber-js');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -14,6 +15,11 @@ router.post('/', validate(contactSchema), async (req, res, next) => {
     const userId = req.user.userId;
 
     try {
+        let normalized = number;
+        try {
+            const parsed = parsePhoneNumberFromString(number, 'BR');
+            if (parsed && parsed.isValid()) normalized = parsed.number.replace('+','');
+        } catch {}
         const newContact = await prisma.contact.create({
             data: { userId, name, number },
         });
@@ -21,6 +27,7 @@ router.post('/', validate(contactSchema), async (req, res, next) => {
         res.status(201).json(newContact);
     } catch (error) {
         if (error.code === 'P2002') {
+            // Diferenciar colisão por unique(userId, number) de colisão em outra constraint
             return res.status(409).json({ error: 'Você já possui um contato com este número.' });
         }
         next(error);
@@ -107,3 +114,59 @@ router.delete('/:id', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// POST /contacts/bulk  { listId?, rows: [{...}], mapping: { name: 'Nome', number: 'Telefone'}, dedupePerList?: boolean }
+router.post('/bulk', async (req, res, next) => {
+    const userId = req.user.userId;
+    const { listId, rows, mapping, dedupePerList } = req.body || {};
+    if (!Array.isArray(rows) || !mapping || !mapping.number) {
+        return res.status(400).json({ error: 'rows e mapping.number são obrigatórios.' });
+    }
+    try {
+        const created = [];
+        const updated = [];
+        const skipped = [];
+        const seenNumbers = new Set();
+        const list = listId ? await prisma.contactList.findFirst({ where: { id: listId, userId } }) : null;
+        if (listId && !list) return res.status(404).json({ error: 'Lista não encontrada.' });
+        for (const r of rows) {
+            let name = mapping.name ? r[mapping.name] : (r.name || '');
+            let number = r[mapping.number] || r.number;
+            if (!number) { skipped.push({ reason: 'missing_number', row: r }); continue; }
+            // normalize
+            try {
+                const parsed = parsePhoneNumberFromString(String(number), 'BR');
+                if (parsed && parsed.isValid()) number = parsed.number.replace('+','');
+            } catch {}
+            if (seenNumbers.has(number)) { skipped.push({ reason: 'duplicate_in_file', number }); continue; }
+            seenNumbers.add(number);
+            // find existing
+            const existing = await prisma.contact.findFirst({ where: { userId, number } });
+            if (existing) {
+                // dedupe per list: connect only if not connected
+                if (listId) {
+                    await prisma.contactList.update({
+                        where: { id: listId },
+                        data: { contacts: { connect: { id: existing.id } } }
+                    }).catch(()=>{});
+                }
+                // update name if provided and different
+                if (name && existing.name !== name) {
+                    await prisma.contact.update({ where: { id: existing.id }, data: { name } });
+                    updated.push(number);
+                } else {
+                    skipped.push({ reason: 'existing_contact', number });
+                }
+                continue;
+            }
+            const contact = await prisma.contact.create({ data: { userId, name: name || '', number } });
+            if (listId) {
+                await prisma.contactList.update({ where: { id: listId }, data: { contacts: { connect: { id: contact.id } } } });
+            }
+            created.push(number);
+        }
+        res.json({ created: created.length, updated: updated.length, skipped });
+    } catch (e) {
+        next(e);
+    }
+});

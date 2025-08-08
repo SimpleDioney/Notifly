@@ -5,6 +5,7 @@ const authMiddleware = require('../middleware/auth.middleware');
 const adminMiddleware = require('../middleware/admin.middleware');
 const wppconnect = require('../services/wppconnect'); // Importar para gestão de chips
 const logger = require('../services/logger');
+const { dlqQueue } = require('../services/queue.service');
 
 const router = express.Router();
 
@@ -158,7 +159,7 @@ router.post('/chips', async (req, res, next) => {
     try {
         const newChip = await wppconnect.addAndInitializeChip({ id, phoneNumber });
         logger.info(`Admin ${req.user.email} adicionou novo chip: ${id}`);
-        res.status(201).json({ message: 'Chip adicionado com sucesso! Verifique a consola do servidor para o QR Code.', chip: newChip });
+        res.status(201).json({ message: 'Chip adicionado com sucesso! Verifique o WebSocket para o QR Code.', chip: newChip });
     } catch (error) {
         logger.error(`Falha ao adicionar novo chip: ${error.message}`);
         // Retorna um erro 409 (Conflict) se o chip já existir
@@ -177,15 +178,48 @@ router.post('/templates', async (req, res, next) => {
                 name,
                 content,
                 isGlobal: true, // Marcado como global
-                // userId é nulo
+                userId: null,
             },
         });
         logger.info(`Template global "${name}" criado pelo admin ${req.user.email}`);
+        // auditoria
+        try { require('../services/logger').audit(req.user.userId, 'admin_create_global_template', { name }); } catch {}
         res.status(201).json(template);
     } catch (error) {
         if (error.code === 'P2002') {
             return res.status(409).json({ error: 'Já existe um template com este nome.' });
         }
+        next(error);
+    }
+});
+
+// DELETE /admin/templates/:id - Remover um template global
+router.delete('/templates/:id', async (req, res, next) => {
+    const { id } = req.params;
+    try {
+        const result = await prisma.template.deleteMany({
+            where: { id: parseInt(id, 10), isGlobal: true }
+        });
+        if (result.count === 0) {
+            return res.status(404).json({ error: 'Template global não encontrado.' });
+        }
+        logger.info(`Template global ID ${id} removido pelo admin ${req.user.email}`);
+        try { require('../services/logger').audit(req.user.userId, 'admin_delete_global_template', { id }); } catch {}
+        res.status(204).send();
+    } catch (error) {
+        next(error);
+    }
+});
+
+// GET /admin/templates - Listar templates globais (debug/admin)
+router.get('/templates', async (req, res, next) => {
+    try {
+        const globals = await prisma.template.findMany({
+            where: { OR: [{ isGlobal: true }, { userId: null }] },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json(globals);
+    } catch (error) {
         next(error);
     }
 });
@@ -234,3 +268,26 @@ router.delete('/announcements/:id', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// --- DLQ Reprocessamento ---
+// GET /admin/dlq - listar jobs na DLQ (ids básicos)
+router.get('/dlq', async (req, res, next) => {
+    try {
+        const jobs = await dlqQueue.getJobs(['waiting', 'delayed', 'active', 'failed', 'completed'], 0, 50);
+        const lite = jobs.map(j => ({ id: j.id, name: j.name, data: j.data, failedReason: j.failedReason }));
+        res.json(lite);
+    } catch (e) { next(e); }
+});
+
+// POST /admin/dlq/:id/reprocess - re-enfileirar job da DLQ para fila principal
+router.post('/dlq/:id/reprocess', async (req, res, next) => {
+    const id = req.params.id;
+    try {
+        const job = await dlqQueue.getJob(id);
+        if (!job) return res.status(404).json({ error: 'Job não encontrado na DLQ.' });
+        const data = job.data;
+        await require('../services/queue.service').addMessageToQueue(data);
+        await job.remove();
+        res.json({ message: 'Job reprocessado e removido da DLQ.' });
+    } catch (e) { next(e); }
+});

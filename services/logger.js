@@ -22,3 +22,15 @@ const logger = winston.createLogger({
 });
 
 module.exports = logger;
+
+// Auditoria simples (async fire-and-forget) com import preguiçoso para evitar dependência circular
+module.exports.audit = async function audit(userId, action, metadata = null) {
+  try {
+    const { prisma } = require('./database');
+    await prisma.auditLog.create({
+      data: { userId, action, metadata },
+    });
+  } catch (e) {
+    // ignora falhas de auditoria
+  }
+}

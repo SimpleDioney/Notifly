@@ -4,6 +4,7 @@ const { prisma } = require('../services/database');
 const authMiddleware = require('../middleware/auth.middleware');
 const validate = require('../middleware/validation.middleware');
 const { templateSchema, templateParamsSchema } = require('../schemas/templates.schemas');
+const Handlebars = require('handlebars');
 const logger = require('../services/logger');
 
 const router = express.Router();
@@ -17,6 +18,12 @@ router.post('/', validate(templateSchema), async (req, res, next) => {
     const userId = req.user.userId;
 
     try {
+        // Validação de placeholders obrigatórios (ex.: {{nome}})
+        try {
+            Handlebars.compile(content);
+        } catch (e) {
+            return res.status(400).json({ error: 'Template inválido. Verifique a sintaxe de placeholders.' });
+        }
         const newTemplate = await prisma.template.create({
             data: {
                 userId,
@@ -39,11 +46,15 @@ router.post('/', validate(templateSchema), async (req, res, next) => {
 router.get('/', async (req, res, next) => {
     const userId = req.user.userId;
     try {
-        const templates = await prisma.template.findMany({
+        const myTemplates = await prisma.template.findMany({
             where: { userId },
             orderBy: { createdAt: 'desc' },
         });
-        res.json(templates);
+        const globalTemplates = await prisma.template.findMany({
+            where: { isGlobal: true },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json({ myTemplates, globalTemplates });
     } catch (error) {
         next(error);
     }
@@ -58,7 +69,10 @@ router.get('/:id', validate(templateParamsSchema), async (req, res, next) => {
         const template = await prisma.template.findFirst({
             where: {
                 id: templateId,
-                userId, // Garante que o usuário só possa acessar seus próprios templates
+                OR: [
+                    { userId },
+                    { isGlobal: true }
+                ],
             },
         });
 
@@ -78,6 +92,19 @@ router.put('/:id', validate(templateParamsSchema), validate(templateSchema), asy
     const { name, content } = req.body;
 
     try {
+        // Cria versão antes de atualizar
+        const existing = await prisma.template.findFirst({ where: { id: Number(templateId), userId } });
+        if (!existing) {
+            return res.status(404).json({ error: 'Template não encontrado ou você não tem permissão para editá-lo.' });
+        }
+        await prisma.templateVersion.create({
+            data: {
+                templateId: existing.id,
+                content: existing.content,
+                authorId: userId,
+            }
+        });
+
         const updatedTemplate = await prisma.template.updateMany({
             where: {
                 id: templateId,
@@ -101,6 +128,36 @@ router.put('/:id', validate(templateParamsSchema), validate(templateSchema), asy
             return res.status(409).json({ error: 'Você já possui um template com este nome.' });
         }
         next(error);
+    }
+});
+
+// GET /templates/:id/versions - obter histórico de versões
+router.get('/:id/versions', validate(templateParamsSchema), async (req, res, next) => {
+    const userId = req.user.userId;
+    const templateId = Number(req.params.id);
+    try {
+        const template = await prisma.template.findFirst({ where: { id: templateId, userId } });
+        if (!template) return res.status(404).json({ error: 'Template não encontrado.' });
+        const versions = await prisma.templateVersion.findMany({
+            where: { templateId },
+            orderBy: { createdAt: 'desc' },
+            take: 20,
+        });
+        res.json(versions);
+    } catch (e) {
+        next(e);
+    }
+});
+
+// POST /templates/preview - Compilação com variáveis fornecidas
+router.post('/preview', async (req, res, next) => {
+    const { content, variables } = req.body || {};
+    try {
+        const template = Handlebars.compile(content);
+        const output = template(variables || {});
+        res.json({ preview: output });
+    } catch (e) {
+        return res.status(400).json({ error: 'Conteúdo inválido.', details: e.message });
     }
 });
 

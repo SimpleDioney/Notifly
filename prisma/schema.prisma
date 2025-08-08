@@ -24,6 +24,10 @@ model User {
   messagesSent              Int           @default(0) @map("messages_sent")
   resetDate                 DateTime?     @map("reset_date")
   mercadopagoSubscriptionId String?       @map("mercadopago_subscription_id")
+  whatsappNumber            String?       @map("whatsapp_number")
+  twoFactorEnabled          Boolean       @default(false) @map("two_factor_enabled")
+  walletBalance             Float         @default(0) @map("wallet_balance")
+  shortenerEnabled          Boolean       @default(false) @map("shortener_enabled")
   createdAt                 DateTime      @default(now()) @map("created_at")
   plan                      Plan          @relation(fields: [planId], references: [id])
   messages                  Message[]
@@ -31,6 +35,12 @@ model User {
   contacts                  Contact[]
   contactLists              ContactList[]
   apiKeys                   ApiKey[]
+  transactions              WalletTransaction[]
+  shortLinks                ShortLink[]
+  audits                    AuditLog[]
+  tags                      Tag[]
+  segments                  Segment[]
+  twoFactorCodes            TwoFactorCode[]
 
   @@map("users")
 }
@@ -41,6 +51,8 @@ model Plan {
   messageLimit  Int      @map("message_limit")
   price         Float
   features      String?
+  allowOverage  Boolean  @default(false) @map("allow_overage")
+  overagePrice  Float?   @map("overage_price")
   users         User[]
 
   @@map("plans")
@@ -56,6 +68,8 @@ model Message {
   sentByNumber    String    @map("sent_by_number")
   errorMessage    String?   @map("error_message")
   sentAt          DateTime  @default(now()) @map("sent_at")
+  templateName    String?   @map("template_name")
+  chipId          String?   @map("chip_id")
   user            User      @relation(fields: [userId], references: [id])
 
   @@map("messages")
@@ -67,6 +81,9 @@ model NumbersPool {
   status      String
   lastUsed    DateTime? @map("last_used")
   sessionData String?   @map("session_data")
+  successCount Int      @default(0) @map("success_count")
+  failureCount Int      @default(0) @map("failure_count")
+  reputationScore Float @default(1.0) @map("reputation_score")
 
   @@map("numbers_pool")
 }
@@ -91,9 +108,21 @@ model Template {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   user      User?    @relation(fields: [userId], references: [id])
+  versions  TemplateVersion[]
 
   @@unique([userId, name])
   @@map("templates")
+}
+
+model TemplateVersion {
+  id         Int      @id @default(autoincrement())
+  templateId Int      @map("template_id")
+  content    String
+  createdAt  DateTime @default(now()) @map("created_at")
+  authorId   Int?     @map("author_id")
+  template   Template @relation(fields: [templateId], references: [id])
+
+  @@map("template_versions")
 }
 
 model Announcement {
@@ -110,12 +139,15 @@ model Contact {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
   name      String
-  number    String   @unique // O número do contato deve ser único por usuário
+  number    String   // Exclusividade por usuário controlada por @@unique([userId, number])
+  attributes Json?    // Atributos livres para segmentação dinâmica
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   user  User           @relation(fields: [userId], references: [id])
   lists ContactList[]  @relation("ContactToList") // Relacionamento com listas
+  tags  ContactTag[]
+  segmentMembers SegmentMember[]
 
   @@unique([userId, number])
   @@map("contacts")
@@ -136,6 +168,58 @@ model ContactList {
   @@map("contact_lists")
 }
 
+// Tags e Segmentos
+model Tag {
+  id     Int      @id @default(autoincrement())
+  userId Int      @map("user_id")
+  name   String
+  user   User     @relation(fields: [userId], references: [id])
+  contacts ContactTag[]
+
+  @@unique([userId, name])
+  @@map("tags")
+}
+
+model ContactTag {
+  id        Int     @id @default(autoincrement())
+  contactId Int     @map("contact_id")
+  tagId     Int     @map("tag_id")
+  contact   Contact @relation(fields: [contactId], references: [id])
+  tag       Tag     @relation(fields: [tagId], references: [id])
+
+  @@unique([contactId, tagId])
+  @@map("contact_tags")
+}
+
+enum SegmentType {
+  STATIC
+  DYNAMIC
+}
+
+model Segment {
+  id        Int         @id @default(autoincrement())
+  userId    Int         @map("user_id")
+  name      String
+  type      SegmentType
+  filter    Json?
+  user      User        @relation(fields: [userId], references: [id])
+  members   SegmentMember[]
+
+  @@unique([userId, name])
+  @@map("segments")
+}
+
+model SegmentMember {
+  id         Int     @id @default(autoincrement())
+  segmentId  Int     @map("segment_id")
+  contactId  Int     @map("contact_id")
+  segment    Segment @relation(fields: [segmentId], references: [id])
+  contact    Contact @relation(fields: [contactId], references: [id])
+
+  @@unique([segmentId, contactId])
+  @@map("segment_members")
+}
+
 model ApiKey {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
@@ -143,8 +227,77 @@ model ApiKey {
   prefix    String   @unique // Os primeiros caracteres da chave, para exibição
   createdAt DateTime @default(now()) @map("created_at")
   lastUsed  DateTime? @map("last_used")
+  status    ApiKeyStatus @default(ACTIVE)
+  validFrom DateTime? @map("valid_from")
+  validTo   DateTime? @map("valid_to")
+  allowedIps String?   @map("allowed_ips")
 
   user User @relation(fields: [userId], references: [id])
 
   @@map("api_keys")
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  SCHEDULED
+  REVOKED
+}
+
+// 2FA Codes
+model TwoFactorCode {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  code      String
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("two_factor_codes")
+}
+
+// Auditoria
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  action    String
+  metadata  Json?
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, action])
+  @@map("audit_logs")
+}
+
+// Carteira/Transações
+enum WalletTxnType {
+  CREDIT
+  DEBIT
+}
+
+model WalletTransaction {
+  id        Int           @id @default(autoincrement())
+  userId    Int           @map("user_id")
+  amount    Float
+  type      WalletTxnType
+  reason    String?
+  createdAt DateTime       @default(now()) @map("created_at")
+  user      User          @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@map("wallet_transactions")
+}
+
+// Shortener
+model ShortLink {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  slug      String   @unique
+  targetUrl String   @map("target_url")
+  clicks    Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("short_links")
 }

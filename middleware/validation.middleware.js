@@ -12,7 +12,12 @@ const validate = (schema) => (req, res, next) => {
 
         // Remova a lógica if/else e sempre valide o objeto 'dataToValidate'.
         // Zod irá ignorar as chaves que não estão no schema (ex: 'query' e 'params' para o sendSchema).
-        schema.parse(dataToValidate);
+        const parsed = schema.parse(dataToValidate);
+
+        // Propaga valores parseados/transformados de volta para a request
+        if (parsed.body) req.body = parsed.body;
+        if (parsed.query) req.query = parsed.query;
+        if (parsed.params) req.params = parsed.params;
 
         next();
     } catch (error) {
